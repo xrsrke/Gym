@@ -1,0 +1,11 @@
+policy_model:
+  responses_api_models:
+    openai_model:
+      host: 0.0.0.0
+      port: 10240
+
+hermes_bench_hermes:
+  responses_api_agents:
+    hermes_bench:
+      sandbox_model_base_url: http://${oc.env:SLURM_MASTER_NODE}:10240/v1
+      sandbox_model_resolve_host: true

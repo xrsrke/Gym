@@ -1,0 +1,17 @@
+sandbox:
+  default_metadata:
+    sandbox-api: apptainer-cli
+  apptainer:
+    create:
+      mount_point: /sandbox
+      start_timeout_s: 600
+      apply_resource_limits: true
+    exec:
+      default_timeout_s: 180
+      fakeroot_for_root: false
+      concurrency: 32
+    probe:
+      command: printf apptainer-sandbox-ready
+      expected_stdout: apptainer-sandbox-ready
+      timeout_s: 30
+      deadline_s: 120
