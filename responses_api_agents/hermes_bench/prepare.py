@@ -19,6 +19,7 @@ import yaml
 
 THIS_DIR = Path(__file__).parent
 GYM_ROOT = THIS_DIR.parents[1]
+HERMES_AGENT_TASK_ID = "task_architecture_diagram_kanban_telegram_functions_extreme"
 SUPPORT_PATHS = [
     "scripts/github_emulator",
     "scripts/p5_render",
@@ -310,16 +311,6 @@ def source_tree(source: Path) -> Iterator[Path]:
         yield root.resolve()
 
 
-def parse_overrides(values: list[str]) -> dict[str, Path]:
-    overrides = {}
-    for value in values:
-        task_id, separator, path = value.partition("=")
-        if not separator or not task_id or not path:
-            raise ValueError(f"invalid --source-path {value!r}, expected TASK_ID=PATH")
-        overrides[task_id] = Path(path)
-    return overrides
-
-
 def build_dataset(
     source: Path,
     output: Path,
@@ -362,16 +353,19 @@ def main() -> None:
     parser.add_argument("--fixture-dir", type=Path, default=THIS_DIR / "data" / "fixtures")
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--source-path", action="append", default=[], help="TASK_ID=PATH override")
+    parser.add_argument("--hermes-agent-path", type=Path)
     args = parser.parse_args()
     try:
+        source_overrides = {}
+        if args.hermes_agent_path is not None:
+            source_overrides[HERMES_AGENT_TASK_ID] = args.hermes_agent_path
         count = build_dataset(
             source=args.source,
             output=args.output,
             fixture_dir=args.fixture_dir,
             task_ids=set(args.task),
             limit=args.limit,
-            source_overrides=parse_overrides(args.source_path),
+            source_overrides=source_overrides,
         )
     except Exception as error:
         sys.exit(f"HermesBench preparation failed: {error}")

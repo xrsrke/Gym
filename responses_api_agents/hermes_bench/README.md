@@ -37,8 +37,7 @@ commit `ca192cfb773915c9d8113352b8646d3ce9329424`.
 ```bash
 uv run --frozen python responses_api_agents/hermes_bench/prepare.py \
   /path/to/hermesbench-eval-clean.zip \
-  --source-path \
-  task_architecture_diagram_kanban_telegram_functions_extreme=/path/to/hermes-agent
+  --hermes-agent-path /path/to/hermes-agent
 ```
 
 This writes the JSONL, fixtures, and grading support to
