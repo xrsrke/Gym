@@ -28,9 +28,6 @@ class Params:
     sandbox_spec: dict[str, Any]
     grader_sandbox_spec: dict[str, Any] = field(default_factory=dict)
     sandbox_default_metadata: dict[str, Any] = field(default_factory=dict)
-    agent_server_module: str = "fake_agent"
-    agent_server_class: str = "FakeAgent"
-    agent_config_class: str = "FakeAgentConfig"
     agent_kwargs: dict[str, Any] = field(default_factory=dict)
     model_server_url: str = ""
     agent_deps_archive: Path | None = None

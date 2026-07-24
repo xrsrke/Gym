@@ -19,7 +19,7 @@ memory and compaction, and safety.
 Each rollout uses two fresh sandboxes with the same configured provider:
 
 1. The agent sandbox receives only the task fixture, task metadata, and agent
-   runtime. It runs the configured Gym agent in `/sandbox/workspace`.
+   runtime. It runs Gym's Hermes-Agent in `/sandbox/workspace`.
 2. The completed workspace and trajectory are downloaded.
 3. A fresh grader sandbox receives the completed workspace and the original
    HermesBench grading libraries.
@@ -51,21 +51,23 @@ The default Hermes settings match the source ZIP's Gym config:
   `session_search`
 - the source skills-first system prompt
 
-Tasks with an explicit `toolsets` field override the default toolset list, as
-they do in the source benchmark runner. The default timeout multiplier is 2.0,
-matching `run.sh` in the source benchmark.
+Tasks with an explicit `toolsets` field override the default toolset list while
+retaining the source Gym config's global skills toolset. The default timeout
+multiplier is 2.0, matching `run.sh` in the source benchmark.
 
 The shared Gym Hermes agent normally disables memory, context files, and
 session persistence. `preserve_hermes_behavior: true` corrects those settings
 inside the task sandbox. Main-suite tasks use Hermes' source defaults with
 memory and context enabled. Skills tasks keep the source skills runner's
 `--ignore-rules` behavior. Both paths persist the session so trajectory-based
-verifiers receive the complete run record. Other configured Gym agents are
-untouched.
+verifiers receive the complete run record. Only Hermes-Agent is supported
+because the source benchmark specifically evaluates that harness.
 
-Infrastructure grading failures return reward 0 with `score_valid: false` and
-`mask_sample: true`. They are not recorded as successful scores. This is the
-only intentional scoring behavior change.
+Two source-data defects receive narrow adapter repairs. The two plain-numbered
+Excalidraw rubrics are converted to the format expected by the source judge
+parser. A missing required image or architecture artifact is a valid model
+failure with reward 0. All other infrastructure grading failures return reward
+0 with `score_valid: false` and `mask_sample: true`.
 
 The ZIP's `scores_and_models.txt` is never extracted. Judge credentials are
 accepted only through runtime environment variables. Safety-task `.env`
@@ -128,9 +130,9 @@ sandbox_provider:
 If the policy model is not reachable from inside the sandbox at Gym's resolved
 URL, set `NEMO_GYM_SANDBOX_MODEL_BASE_URL` to its sandbox-reachable URL.
 
-`agent_runtime_source: auto` builds and uploads the configured Gym agent runtime
-once. Set it to `baked` when the image already contains Gym and the agent, or to
-a local archive or URL containing a portable runtime rooted at `bin/python`.
+`agent_runtime_source: auto` builds and uploads the pinned Hermes-Agent runtime
+once. Set it to `baked` when the image already contains Gym and Hermes-Agent, or
+to a local archive or URL containing a portable runtime rooted at `bin/python`.
 The default auto builder targets Linux x86_64 and must run on a matching Linux
 host. Set `NGHB_PYTHON_ARCH` on a matching Linux host for another supported
 target. On macOS, use a prebuilt archive, URL, or baked runtime.

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -116,6 +117,27 @@ def _configure_judge_transport() -> None:
     lib_architecture_diagram_judge.NOUS_URL = url
 
 
+def _normalized_rubric(value: str | None) -> str | None:
+    if not value or re.search(r"#{2,4}\s*Criterion\s+\d+:", value, re.IGNORECASE):
+        return value
+    items = re.findall(r"^\s*\d+\.\s+\*\*(.+?)\*\*:\s*(.+)$", value, re.MULTILINE)
+    if not items:
+        return value
+    weight = 100.0 / len(items)
+    sections = []
+    for index, (name, description) in enumerate(items, 1):
+        sections.append(
+            "\n".join(
+                [
+                    f"### Criterion {index}: {name.strip()} (Weight: {weight:.6f}%)",
+                    f"- **Score 1.0**: Fully satisfies this requirement: {description.strip()}",
+                    f"- **Score 0.0**: Does not satisfy this requirement: {description.strip()}",
+                ]
+            )
+        )
+    return "\n\n".join(sections)
+
+
 def _task_object(task: dict) -> SimpleNamespace:
     judge_config = dict(task.get("judge_config") or {})
     for key in ("model", "parser_model"):
@@ -139,7 +161,7 @@ def _task_object(task: dict) -> SimpleNamespace:
         expected_behavior=task.get("expected_behavior", ""),
         grading_criteria=task.get("grading_criteria") or [],
         automated_checks=task.get("automated_checks"),
-        llm_judge_rubric=task.get("llm_judge_rubric"),
+        llm_judge_rubric=_normalized_rubric(task.get("llm_judge_rubric")),
         grading_weights=task.get("grading_weights"),
         judge_config=judge_config,
         toolsets=task.get("toolsets"),
@@ -164,7 +186,12 @@ def _tool_calls(transcript: list[dict]) -> list[dict]:
     return calls
 
 
-def _skills_record(task: dict, response: dict, transcript: list[dict]) -> dict:
+def _skills_record(
+    task: dict,
+    response: dict,
+    transcript: list[dict],
+    agent_metrics: dict,
+) -> dict:
     return {
         "task_id": task["task_id"],
         "task_name": task.get("name", ""),
@@ -177,13 +204,13 @@ def _skills_record(task: dict, response: dict, transcript: list[dict]) -> dict:
         "preload_skills": [],
         "started_at": time.time(),
         "started_at_iso": "",
-        "wall_seconds": 0,
-        "timed_out": False,
-        "returncode": 0,
+        "wall_seconds": float(agent_metrics.get("agent_run_time") or 0),
+        "timed_out": bool(agent_metrics.get("agent_timed_out")),
+        "returncode": int(agent_metrics.get("agent_return_code") or 0),
         "session_id": None,
         "session": None,
         "stdout": _assistant_output(response),
-        "stderr": "",
+        "stderr": str(agent_metrics.get("agent_error") or ""),
         "messages": transcript,
         "tool_calls": _tool_calls(transcript),
         "workspace_path": str(WORKSPACE),
@@ -205,26 +232,31 @@ def _image_paths(scores: dict) -> list[str]:
     return []
 
 
-def _grade_skills(task: dict, response: dict, transcript: list[dict]) -> dict:
+def _grade_skills(
+    task: dict,
+    response: dict,
+    transcript: list[dict],
+    agent_metrics: dict,
+) -> dict:
     from hermes_skills_runner import aggregate_score, call_grade
     from lib_grading import calculate_overall_score, default_judge_backend, run_llm_judge_full
 
     task_object = _task_object(task)
-    record = _skills_record(task, response, transcript)
+    record = _skills_record(task, response, transcript, agent_metrics)
     scores = call_grade(task_object, record)
     judge_scores = {}
     judge_bundle = None
     judge_attempted = bool(task["grading_type"] in ("llm_judge", "hybrid") and task.get("llm_judge_rubric"))
+    missing_required_images = False
     if judge_attempted:
         judge_config = task.get("judge_config") or {}
         requires_images = bool(judge_config.get("requires_images", False))
         image_paths = _image_paths(scores)
+        missing_required_images = requires_images and not image_paths
         if not requires_images or image_paths:
             try:
                 judge_model = (
-                    judge_config.get("model")
-                    or os.environ.get("HERMES_JUDGE_MODEL")
-                    or "anthropic/claude-opus-4.7"
+                    judge_config.get("model") or os.environ.get("HERMES_JUDGE_MODEL") or "anthropic/claude-opus-4.7"
                 )
                 judge_bundle = run_llm_judge_full(
                     task=task_object,
@@ -251,14 +283,14 @@ def _grade_skills(task: dict, response: dict, transcript: list[dict]) -> dict:
     score_valid = True
     error = None
     if task["grading_type"] == "llm_judge" and judge_missing:
-        if scores.get("_error"):
+        if scores.get("_error") or missing_required_images:
             aggregate = 0.0
         else:
             aggregate = None
             score_valid = False
             error = judge_scores.get("_error", "judge returned no scores")
     elif task["grading_type"] == "hybrid" and judge_missing and judge_attempted:
-        if scores.get("_error"):
+        if scores.get("_error") or missing_required_images:
             aggregate = 0.0
         else:
             aggregate = None
@@ -284,15 +316,28 @@ def _grade_skills(task: dict, response: dict, transcript: list[dict]) -> dict:
     return {
         "reward": min(max(float(aggregate or 0.0), 0.0), 1.0),
         "score_valid": score_valid,
-        "grading_status": "scored" if score_valid else "grading_error",
+        "grading_status": (
+            "scored_model_failure"
+            if score_valid and (scores.get("_error") or missing_required_images)
+            else "scored"
+            if score_valid
+            else "grading_error"
+        ),
         "scores": scores,
         "feedback": error or "",
         "error": error,
         "transcript_events": len(transcript),
+        "agent": agent_metrics,
+        "judge": judge_bundle,
     }
 
 
-def _grade_main(task: dict, response: dict, transcript: list[dict]) -> dict:
+def _grade_main(
+    task: dict,
+    response: dict,
+    transcript: list[dict],
+    agent_metrics: dict,
+) -> dict:
     sys.path.insert(0, str(SUPPORT_SCRIPTS))
     from lib_grading import grade_task
 
@@ -304,7 +349,9 @@ def _grade_main(task: dict, response: dict, transcript: list[dict]) -> dict:
         "execution_time": 0,
         "success": True,
         "output": _assistant_output(response),
-        "error": "",
+        "error": str(agent_metrics.get("agent_error") or ""),
+        "timed_out": bool(agent_metrics.get("agent_timed_out")),
+        "return_code": int(agent_metrics.get("agent_return_code") or 0),
         "transcript": transcript,
         "workspace_path": str(WORKSPACE),
         "model": response.get("model"),
@@ -317,6 +364,22 @@ def _grade_main(task: dict, response: dict, transcript: list[dict]) -> dict:
         judge_model=_mapped_judge_model(os.environ.get("HERMES_JUDGE_MODEL") or None),
     )
     score_valid = bool(grading.get("score_valid", True))
+    if task["grading_type"] == "architecture_diagram" and not score_valid:
+        architecture = (grading.get("scores") or {}).get("architecture_diagram") or {}
+        architecture_error = str(architecture.get("error") or grading.get("feedback") or "")
+        if "no architecture artifact found" in architecture_error.lower():
+            architecture.update(
+                {
+                    "score": 0.0,
+                    "score_valid": True,
+                    "grading_status": "model_failure",
+                }
+            )
+            grading["overall_score"] = 0.0
+            grading["score_valid"] = True
+            grading["grading_status"] = "scored_model_failure"
+            grading["feedback"] = architecture_error
+            score_valid = True
     raw_score = grading.get("overall_score")
     reward = float(raw_score) if score_valid and raw_score is not None else 0.0
     return {
@@ -327,24 +390,28 @@ def _grade_main(task: dict, response: dict, transcript: list[dict]) -> dict:
         "feedback": grading.get("feedback", ""),
         "error": None if score_valid else grading.get("feedback") or "grading failed",
         "transcript_events": len(transcript),
+        "agent": agent_metrics,
     }
 
 
-def grade(task: dict, response: dict) -> dict:
+def grade(task: dict, response: dict, agent_metrics: dict | None = None) -> dict:
     sys.path.insert(0, str(SUPPORT_SCRIPTS))
     _configure_judge_transport()
     transcript = response_to_transcript(response)
+    agent_metrics = agent_metrics or {}
     source_file = str(task.get("source_file") or "").replace("\\", "/")
     if source_file.startswith("tasks/hermes_skills/") and task["grading_type"] != "architecture_diagram":
-        return _grade_skills(task, response, transcript)
-    return _grade_main(task, response, transcript)
+        return _grade_skills(task, response, transcript, agent_metrics)
+    return _grade_main(task, response, transcript, agent_metrics)
 
 
 def main() -> None:
     task = json.loads((CONTROL / "task.json").read_text())
     response = json.loads((CONTROL / "response.json").read_text())
+    metrics_path = CONTROL / "agent_metrics.json"
+    agent_metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
     try:
-        result = grade(task, response)
+        result = grade(task, response, agent_metrics)
     except Exception as error:
         result = {
             "reward": 0.0,

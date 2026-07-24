@@ -25,8 +25,6 @@ def _json_env(name: str) -> dict:
 def _preserve_hermes_behavior(task: dict) -> None:
     if os.environ.get("NGHB_PRESERVE_HERMES_BEHAVIOR") != "1":
         return
-    if os.environ.get("NGHB_AGENT_MODULE") != "responses_api_agents.hermes_agent.app":
-        return
 
     import run_agent
     import yaml
@@ -50,6 +48,30 @@ def _preserve_hermes_behavior(task: dict) -> None:
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
 
+def _sync_hermes_skills(enabled_toolsets: list[str] | None) -> None:
+    if not enabled_toolsets or "skills" not in enabled_toolsets:
+        return
+
+    bundled_skills = Path(sys.executable).parent.parent / "skills"
+    if bundled_skills.is_dir():
+        os.environ["HERMES_BUNDLED_SKILLS"] = str(bundled_skills)
+    module = importlib.import_module("tools.skills_sync")
+    module = importlib.reload(module)
+    result = module.sync_skills(quiet=True)
+    if not result.get("total_bundled"):
+        raise RuntimeError("Hermes skills toolset is enabled but no bundled skills were found")
+
+
+def _task_toolsets(task: dict, configured: list[str] | None) -> list[str] | None:
+    selected = task.get("toolsets") or configured
+    if selected is None:
+        return None
+    enabled = [selected] if isinstance(selected, str) else list(selected)
+    if "skills" not in enabled:
+        enabled.append("skills")
+    return enabled
+
+
 def main() -> None:
     workspace = Path(os.environ.get("NGHB_WORKSPACE", "/sandbox/workspace"))
     workspace.mkdir(parents=True, exist_ok=True)
@@ -63,41 +85,32 @@ def main() -> None:
     from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
     from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming
     from nemo_gym.server_utils import ServerClient
-
-    module = importlib.import_module(os.environ["NGHB_AGENT_MODULE"])
-    agent_class = getattr(module, os.environ["NGHB_AGENT_CLASS"])
-    config_class = getattr(module, os.environ["NGHB_AGENT_CONFIG_CLASS"])
+    from responses_api_agents.hermes_agent.app import HermesAgent, HermesAgentConfig
 
     model_base_url = model_url.rstrip("/")
     if model_base_url.endswith("/v1"):
         model_base_url = model_base_url[:-3]
-    global_config = {}
-    model_server = None
-    if model_base_url:
-        global_config = {"policy_model": {"responses_api_models": {"policy_model": {}}}}
-        model_server = ModelServerRef(name="policy_model", type="responses_api_models")
+    global_config = {"policy_model": {"responses_api_models": {"policy_model": {}}}}
+    model_server = ModelServerRef(name="policy_model", type="responses_api_models")
     client = ServerClient.model_construct(global_config_dict=global_config)
     client._build_server_base_url = lambda config: model_base_url
 
-    fields = config_class.model_fields
+    enabled_toolsets = _task_toolsets(task, agent_kwargs.get("enabled_toolsets"))
     config_values = {
         "host": "0.0.0.0",
         "port": 0,
-        "name": agent_class.__name__.lower(),
+        "name": HermesAgent.__name__.lower(),
         "entrypoint": "app.py",
+        "model_server": model_server,
+        "resources_server": ResourcesServerRef(name="hermes_bench", type="resources_servers"),
         **agent_kwargs,
     }
-    if "model_server" in fields:
-        config_values["model_server"] = model_server
-    if "resources_server" in fields:
-        config_values["resources_server"] = ResourcesServerRef(name="hermes_bench", type="resources_servers")
-    if "model" in fields and model_name:
-        config_values["model"] = model_name
-    if "enabled_toolsets" in fields and task.get("toolsets"):
-        config_values["enabled_toolsets"] = task["toolsets"]
-    config = config_class(**config_values)
-    agent = agent_class(config=config, server_client=client)
+    if enabled_toolsets is not None:
+        config_values["enabled_toolsets"] = enabled_toolsets
+    config = HermesAgentConfig(**config_values)
+    agent = HermesAgent(config=config, server_client=client)
     _preserve_hermes_behavior(task)
+    _sync_hermes_skills(getattr(config, "enabled_toolsets", None))
 
     body_data = json.loads(Path("/sandbox/control/body.json").read_text())
     body_data["model"] = model_name

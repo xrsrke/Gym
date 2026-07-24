@@ -2,14 +2,7 @@ import json
 from pathlib import Path
 
 
-class FakeAgentConfig:
-    model_fields = {
-        "model_server": None,
-        "resources_server": None,
-        "model": None,
-        "enabled_toolsets": None,
-    }
-
+class HermesAgentConfig:
     def __init__(self, **values):
         self.values = values
 
@@ -58,7 +51,7 @@ class FakeResponse:
         return json.dumps(self.payload)
 
 
-class FakeAgent:
+class HermesAgent:
     def __init__(self, config, server_client):
         self.config = config
         self.server_client = server_client

@@ -28,9 +28,12 @@ export APPTAINER_CONFIGDIR=/tmp/apptainer-config
 export HERMES_BENCH_IMAGE="$user_root/hermesbench/images/hermesbench-eval-ca192cfb.sif"
 export POLICY_API_KEY
 POLICY_API_KEY="$(<"$user_root/.secrets/inference_api_key")"
+export NOUS_API_KEY="$POLICY_API_KEY"
 export SLURM_MASTER_NODE="${SLURM_MASTER_NODE:-$(hostname)}"
 export RAY_ADDRESS=local
 export RAY_ENABLE_UV_RUN_RUNTIME_ENV=0
+export UV_LINK_MODE=copy
+export UV_LOCK_TIMEOUT=1800
 
 cd "$gym_root"
 
@@ -46,7 +49,7 @@ trap cleanup EXIT INT TERM
   "+config_paths=[responses_api_agents/hermes_bench/configs/hermes_bench_hermes.yaml,responses_api_agents/hermes_bench/configs/cluster_apptainer.yaml,responses_api_agents/hermes_bench/configs/sandbox_apptainer.yaml,responses_api_models/openai_model/configs/openai_model.yaml]" \
   +policy_base_url=https://inference-api.nvidia.com/v1 \
   '+policy_api_key=${oc.env:POLICY_API_KEY}' \
-  +policy_model_name=nvidia/nvidia/Nemotron-3-Nano-30B-A3B \
+  "+policy_model_name=${HERMES_BENCH_POLICY_MODEL:-nvidia/nvidia/Nemotron-3-Nano-30B-A3B}" \
   ++uv_venv_dir="/tmp/nemo-gym-venvs/$run_tag" \
   >"$log_dir/ng_run.log" 2>&1 &
 NG_RUN_PID=$!
@@ -60,14 +63,14 @@ until "$runtime_python" "$runtime_bin/ng_status" 2>&1 | grep -q '2 servers found
 done
 
 "$runtime_python" "$runtime_bin/ng_collect_rollouts" \
-  +input_jsonl_fpath=responses_api_agents/hermes_bench/data/hermes_bench_task_memory.jsonl \
+  "+input_jsonl_fpath=${HERMES_BENCH_INPUT:-responses_api_agents/hermes_bench/data/hermes_bench_task_memory.jsonl}" \
   +output_jsonl_fpath="$output_dir/rollouts.jsonl" \
   +agent_name=hermes_bench_hermes \
-  +limit=1 \
-  +num_samples_in_parallel=1 \
-  +num_repeats=1 \
+  "+limit=${HERMES_BENCH_LIMIT:-1}" \
+  "+num_samples_in_parallel=${HERMES_BENCH_PARALLEL:-1}" \
+  "+num_repeats=${HERMES_BENCH_REPEATS:-1}" \
   +responses_create_params.temperature=1.0 \
   +responses_create_params.top_p=0.95 \
-  +responses_create_params.max_output_tokens=32768 \
+  "+responses_create_params.max_output_tokens=${HERMES_BENCH_MAX_OUTPUT_TOKENS:-32768}" \
   +resume_from_cache=false \
   >"$log_dir/ng_collect.log" 2>&1

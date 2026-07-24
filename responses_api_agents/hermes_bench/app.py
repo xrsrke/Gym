@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 import time
 import uuid
-from asyncio import Semaphore
+from asyncio import Semaphore, sleep
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -24,7 +24,7 @@ from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body,
 from nemo_gym.config_types import ModelServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
-from nemo_gym.sandbox import AsyncSandbox, SandboxResources, SandboxSpec
+from nemo_gym.sandbox import AsyncSandbox, SandboxExecResult, SandboxResources, SandboxSpec
 from nemo_gym.sandbox.config import resolve_provider_config, resolve_provider_metadata
 
 
@@ -36,6 +36,8 @@ class HermesBenchMetrics(BaseModel):
     scores: dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
     agent_timed_out: bool = False
+    agent_return_code: Optional[int] = None
+    agent_error: Optional[str] = None
     mask_sample: bool = False
     agent_run_time: Optional[float] = None
     grader_run_time: Optional[float] = None
@@ -43,9 +45,6 @@ class HermesBenchMetrics(BaseModel):
 
 class HermesBenchAgentConfig(BaseResponsesAPIAgentConfig):
     model_server: Optional[ModelServerRef] = None
-    agent_server_module: str
-    agent_server_class: str
-    agent_config_class: str
     agent_kwargs: dict[str, Any] = Field(default_factory=dict)
 
     sandbox_provider: str | dict[str, Any] = "sandbox"
@@ -114,7 +113,7 @@ def _safe_config(params: HermesBenchInstanceConfig) -> dict[str, Any]:
     return _redact(data)
 
 
-def _check(result: Any, label: str) -> None:
+def _check(result: SandboxExecResult, label: str) -> None:
     if result.return_code != 0:
         stdout = (result.stdout or "")[-2000:]
         stderr = (result.stderr or "")[-2000:]
@@ -122,19 +121,14 @@ def _check(result: Any, label: str) -> None:
 
 
 class AgentRuntime:
-    def __init__(self, config: HermesBenchAgentConfig):
-        self.config = config
+    def __init__(self):
         self.root = Path(__file__).parent
 
-    @property
-    def agent_key(self) -> str:
-        return self.config.agent_server_module.split(".")[-2]
-
     def setup(self) -> Path:
-        deps_dir = self.root / "deps" / f"hermes_bench_{self.agent_key}_deps"
-        script = self.root / "setup_scripts" / f"{self.agent_key}_deps.sh"
+        deps_dir = self.root / "deps" / "hermes_bench_hermes_agent_deps"
+        script = self.root / "setup_scripts" / "hermes_agent_deps.sh"
         portable = self.root / "setup_scripts" / "_portable_python.sh"
-        requirements = PARENT_DIR / "responses_api_agents" / self.agent_key / "requirements.txt"
+        requirements = PARENT_DIR / "responses_api_agents" / "hermes_agent" / "requirements.txt"
         if not script.exists():
             raise ValueError(f"missing agent runtime setup script: {script}")
         recipe = hashlib.sha256(
@@ -233,7 +227,7 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
         agent_deps_archive = None
         agent_deps_url = None
         if self.config.agent_runtime_source == "auto":
-            deps_dir = AgentRuntime(self.config).setup()
+            deps_dir = AgentRuntime().setup()
             agent_deps_archive = Path(__file__).parent / f".{deps_dir.name}.tar.gz"
             sentinel = deps_dir / ".installed"
             if not agent_deps_archive.exists() or agent_deps_archive.stat().st_mtime < sentinel.stat().st_mtime:
@@ -345,9 +339,6 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
     def _agent_env(params: HermesBenchInstanceConfig) -> dict[str, str]:
         encoded_kwargs = base64.b64encode(json.dumps(params.agent_kwargs).encode()).decode()
         return {
-            "NGHB_AGENT_MODULE": params.agent_server_module,
-            "NGHB_AGENT_CLASS": params.agent_server_class,
-            "NGHB_AGENT_CONFIG_CLASS": params.agent_config_class,
             "NGHB_AGENT_KWARGS_B64": encoded_kwargs,
             "NGHB_MODEL_URL": params.model_server_url,
             "NGHB_MODEL_NAME": params.body.model or params.model_server.name,
@@ -385,6 +376,7 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
     async def _run_agent(self, params: HermesBenchInstanceConfig) -> NeMoGymResponse:
         sandbox = AsyncSandbox(params.resolved_sandbox_provider, self._sandbox_spec(params, "agent"))
         started = time.time()
+        result = None
         try:
             await sandbox.start()
             await self._seed_sandbox(sandbox, params)
@@ -442,7 +434,6 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
                 env=env,
                 timeout_s=self._task_timeout_s(params),
             )
-            _check(result, "agent run")
             _check(
                 await sandbox.exec(
                     "tar -czf /sandbox/control/workspace.tar.gz -C /sandbox workspace",
@@ -450,11 +441,37 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
                 ),
                 "workspace archive",
             )
-            await sandbox.download("/sandbox/control/response.json", params.persistent_dir / "response.json")
             await sandbox.download("/sandbox/control/workspace.tar.gz", params.persistent_dir / "workspace.tar.gz")
+            try:
+                await sandbox.download("/sandbox/control/response.json", params.persistent_dir / "response.json")
+            except Exception:
+                if result.return_code == 0:
+                    raise
+                response = NeMoGymResponse(
+                    id=f"hermes-bench-{params.task_id}",
+                    created_at=int(time.time()),
+                    model=params.body.model or "unknown",
+                    object="response",
+                    output=[],
+                    parallel_tool_calls=bool(params.body.parallel_tool_calls),
+                    tool_choice=params.body.tool_choice or "auto",
+                    tools=params.body.tools or [],
+                )
+                (params.persistent_dir / "response.json").write_text(response.model_dump_json())
         finally:
             await sandbox.stop()
-        metrics = {"agent_run_time": time.time() - started}
+        return_code = int(result.return_code)
+        stdout = (result.stdout or "")[-2000:]
+        stderr = (result.stderr or "")[-2000:]
+        agent_error = None
+        if return_code != 0:
+            agent_error = f"agent run exited {return_code}: {stdout}{stderr}"
+        metrics = {
+            "agent_run_time": time.time() - started,
+            "agent_timed_out": result.error_type == "timeout" or return_code == -1,
+            "agent_return_code": return_code,
+            "agent_error": agent_error,
+        }
         (params.persistent_dir / "agent_metrics.json").write_text(json.dumps(metrics))
         return NeMoGymResponse.model_validate_json((params.persistent_dir / "response.json").read_text())
 
@@ -467,7 +484,9 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
             await self._seed_sandbox(sandbox, params)
             await sandbox.upload(params.persistent_dir / "workspace.tar.gz", "/sandbox/control/workspace.tar.gz")
             await sandbox.upload(params.persistent_dir / "response.json", "/sandbox/control/response.json")
+            await sandbox.upload(params.persistent_dir / "agent_metrics.json", "/sandbox/control/agent_metrics.json")
             await sandbox.upload(Path(__file__).with_name("grader_runner.py"), "/sandbox/control/grader_runner.py")
+            await sandbox.upload(Path(__file__).with_name("p5_direct.py"), "/sandbox/control/p5_direct.py")
             _check(
                 await sandbox.exec(
                     "rm -rf /sandbox/workspace && tar -xzf /sandbox/control/workspace.tar.gz -C /sandbox",
@@ -494,11 +513,35 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
                 env=env,
                 timeout_s=params.grader_timeout_s,
             )
-            try:
-                await sandbox.download("/sandbox/control/grade.json", grade_path)
-            except Exception:
-                _check(result, "grader run")
-                raise
+            for attempt in range(3):
+                try:
+                    await sandbox.download("/sandbox/control/grade.json", grade_path)
+                    break
+                except Exception:
+                    if attempt == 2:
+                        _check(result, "grader run")
+                        raise
+                    await sleep(1)
+
+            artifact_result = await sandbox.exec(
+                "\n".join(
+                    [
+                        "items=''",
+                        '[ -d /sandbox/control/architecture ] && items="$items control/architecture"',
+                        '[ -d /sandbox/workspace/.judge_artifacts ] && items="$items workspace/.judge_artifacts"',
+                        '[ -n "$items" ] && tar -czf /sandbox/control/grader_artifacts.tar.gz -C /sandbox $items',
+                    ]
+                ),
+                timeout_s=300,
+            )
+            if artifact_result.return_code == 0:
+                try:
+                    await sandbox.download(
+                        "/sandbox/control/grader_artifacts.tar.gz",
+                        params.persistent_dir / "grader_artifacts.tar.gz",
+                    )
+                except Exception:
+                    pass
         finally:
             await sandbox.stop()
         grade = json.loads(grade_path.read_text())

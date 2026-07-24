@@ -7,6 +7,7 @@ import pytest
 
 from responses_api_agents.hermes_bench.prepare import (
     build_dataset,
+    build_support_archive,
     parse_task,
     to_gym_row,
 )
@@ -112,6 +113,30 @@ def test_row_uses_archived_skills_prompt(tmp_path: Path) -> None:
     assert messages[0]["role"] == "system"
     assert "call skills_list" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Write answer.txt."}
+
+
+def test_support_archive_installs_p5_runtime(tmp_path: Path, monkeypatch) -> None:
+    import responses_api_agents.hermes_bench.prepare as prepare
+
+    source = source_tree(tmp_path)
+    p5_dir = source / "scripts" / "p5_render"
+    (p5_dir / "package-lock.json").write_text("{}")
+
+    def npm_ci(command, cwd, check):
+        assert command == ["npm", "ci", "--omit=dev", "--ignore-scripts"]
+        assert cwd.name == "p5_render"
+        assert check is True
+        (cwd / "node_modules" / "puppeteer-core").mkdir(parents=True)
+        (cwd / "node_modules" / "puppeteer-core" / "package.json").write_text("{}")
+
+    monkeypatch.setattr(prepare.shutil, "which", lambda name: "/usr/bin/npm")
+    monkeypatch.setattr(prepare.subprocess, "run", npm_ci)
+    output = tmp_path / "support.tar.gz"
+
+    build_support_archive(source, output)
+
+    with tarfile.open(output) as archive:
+        assert archive.getmember("benchmark/scripts/p5_render/node_modules/puppeteer-core/package.json").isfile()
 
 
 def test_zip_extraction_excludes_score_credentials(tmp_path: Path) -> None:

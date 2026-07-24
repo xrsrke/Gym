@@ -5,6 +5,7 @@ import importlib.util
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -222,12 +223,31 @@ def build_fixture(
 
 def build_support_archive(source_root: Path, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(output, "w:gz") as archive:
+    with tempfile.TemporaryDirectory(prefix="hermes-bench-support-") as temp_dir:
+        support_root = Path(temp_dir) / "benchmark"
         for relative in SUPPORT_PATHS:
             source = source_root / relative
             if not source.exists():
                 raise FileNotFoundError(f"benchmark support path is missing: {source}")
-            archive.add(source, arcname=f"benchmark/{relative}")
+            destination = support_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, destination)
+            else:
+                shutil.copy2(source, destination)
+
+        p5_dir = support_root / "scripts/p5_render"
+        if (p5_dir / "package-lock.json").exists():
+            if not shutil.which("npm"):
+                raise RuntimeError("npm is required to prepare the p5 renderer")
+            subprocess.run(
+                ["npm", "ci", "--omit=dev", "--ignore-scripts"],
+                cwd=p5_dir,
+                check=True,
+            )
+
+        with tarfile.open(output, "w:gz") as archive:
+            archive.add(support_root, arcname="benchmark")
 
 
 def _portable_path(path: Path) -> str:

@@ -3,12 +3,9 @@ hermes_bench_hermes:
     hermes_bench:
       entrypoint: app.py
       domain: agent
-      description: HermesBench tasks run by a Gym agent inside isolated task sandboxes.
+      description: HermesBench tasks run by Hermes-Agent inside isolated task sandboxes.
       value: Evaluate tool use, skills, memory, safety, and artifact creation.
 
-      agent_server_module: responses_api_agents.hermes_agent.app
-      agent_server_class: HermesAgent
-      agent_config_class: HermesAgentConfig
       agent_kwargs:
         max_turns: 90
         terminal_backend: local
@@ -33,6 +30,7 @@ hermes_bench_hermes:
       grader_env:
         NOUS_API_KEY: ${oc.env:NOUS_API_KEY,''}
         OPENROUTER_API_KEY: ${oc.env:OPENROUTER_API_KEY,''}
+        P5_RENDER_CMD: python3 /sandbox/control/p5_direct.py {sketch} {out} {extra}
       grader_env_files: {}
 
       model_server:
