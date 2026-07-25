@@ -33,6 +33,8 @@ Its SHA-256 is
 One task also requires
 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) at
 commit `ca192cfb773915c9d8113352b8646d3ce9329424`.
+The evaluation runtime is pinned separately by
+`responses_api_agents/hermes_agent/requirements.txt`.
 
 ```bash
 uv run --frozen python responses_api_agents/hermes_bench/prepare.py \
@@ -47,27 +49,31 @@ smaller dataset.
 
 ## Quickstart
 
+Build the task image from the ZIP's original environment recipe:
+
+```bash
+docker build --platform linux/amd64 -t hermes-bench:local responses_api_agents/hermes_bench
+```
+
+Publish that image for OpenSandbox or convert it to a SIF for Apptainer, then:
+
 ```bash
 export HERMES_BENCH_IMAGE=docker://registry.example/hermes-bench:pinned-tag
+export POLICY_BASE_URL=https://provider.example/v1
+export POLICY_API_KEY=...
+export POLICY_MODEL_NAME=provider/model
+uv run --frozen bash responses_api_agents/hermes_bench/run.sh
 ```
+
+The command runs all 140 tasks with temperature 1 and top-p 0.95. A limit is
+only a smoke test. The first eight rows are architecture tasks, so a prefix is
+not representative of the full score.
+
+OpenSandbox uses the same command with:
 
 ```bash
-ng_run \
-  "+config_paths=[responses_api_agents/hermes_bench/configs/hermes_bench_hermes.yaml,nemo_gym/sandbox/providers/opensandbox/configs/opensandbox.yaml,responses_api_models/vllm_model/configs/vllm_model.yaml]"
-```
-
-```bash
-ng_collect_rollouts \
-  +agent_name=hermes_bench_hermes \
-  +input_jsonl_fpath=responses_api_agents/hermes_bench/data/hermes_bench.jsonl \
-  +output_jsonl_fpath=results/hermes_bench.jsonl \
-  +limit=5
-```
-
-For Apptainer, replace the OpenSandbox provider config with:
-
-```text
-responses_api_agents/hermes_bench/configs/sandbox_apptainer.yaml
+export HERMES_BENCH_IMAGE=registry.example/hermes-bench:pinned-tag
+export HERMES_BENCH_PROVIDER_CONFIG=nemo_gym/sandbox/providers/opensandbox/configs/opensandbox.yaml
 ```
 
 `agent_runtime_source: auto` builds the pinned Hermes-Agent runtime on Linux
@@ -75,7 +81,10 @@ x86_64. Use a baked or portable runtime on macOS.
 
 The image needs `bash`, `tar`, Python 3, Git, PyYAML, `requests`, task
 dependencies, and browser rendering dependencies. The default config forwards
-`NOUS_API_KEY` and `OPENROUTER_API_KEY`.
+`NOUS_API_KEY` and `OPENROUTER_API_KEY`. Set `HERMES_BENCH_EXTRA_CONFIG` when
+custom sandbox networking or judge routing needs another config overlay.
+Comparable scores require the same policy model, judge routes, and all 140
+tasks.
 
 ## Test
 

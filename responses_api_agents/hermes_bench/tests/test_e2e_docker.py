@@ -39,6 +39,7 @@ class Params:
     grader_timeout_s: int = 120
     timeout_multiplier: float = 1.0
     grader_env: dict[str, str] = field(default_factory=dict)
+    grader_env_files: dict[str, Path] = field(default_factory=dict)
     judge_model: str | None = None
 
     @property
@@ -97,6 +98,7 @@ async def test_agent_and_original_grader_in_fresh_docker_sandboxes(tmp_path: Pat
             support_archive=(ROOT.parents[1] / body.metadata["support_archive"]).resolve(),
             resolved_sandbox_provider={"docker": {}},
             sandbox_spec={"image": tag, "workdir": "/sandbox/workspace"},
+            preserve_hermes_behavior=False,
         )
         response = await HermesBenchAgent._run_agent(harness, params)
         metrics = await HermesBenchAgent._run_grader(harness, params)
