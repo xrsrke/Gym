@@ -343,6 +343,11 @@ class HermesBenchAgent(SimpleResponsesAPIAgent):
             "NGHB_MODEL_URL": params.model_server_url,
             "NGHB_MODEL_NAME": params.body.model or params.model_server.name,
             "NGHB_WORKSPACE": "/sandbox/workspace",
+            # Apptainer forwards the parent process environment by default, so a
+            # leaked host TERMINAL_CWD (e.g. /home/<user>, which apptainer also
+            # auto-binds) would silently redirect the agent's relative-path file
+            # writes to the HOST home dir instead of the workspace. Pin it.
+            "TERMINAL_CWD": "/sandbox/workspace",
             "NGHB_EXTERNAL_RUNTIME": "1" if params.agent_deps_archive or params.agent_deps_url else "0",
             "NGHB_PRESERVE_HERMES_BEHAVIOR": "1" if params.preserve_hermes_behavior else "0",
         }
