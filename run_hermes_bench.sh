@@ -20,6 +20,9 @@
 #                          fixture (required only when --prepare is used)
 #   --image PATH           existing .sif (default: build/reuse .hermes_bench.sif)
 #   --prepare              re-run prepare.py (needed after task/grader changes)
+#   --tasks REGEX          run only tasks whose task_id or category matches
+#                          (e.g. --tasks systematic_debugging, --tasks p5js,
+#                          --tasks 'task_arxiv_.*'); default: all 140
 #   --port N               head server port (default: 11000; unique per
 #                          concurrent run on the same host)
 #
@@ -49,6 +52,7 @@ source_repo="/home/shared/hermesbench-eval"
 hermes_agent_path=""
 image="$script_dir/.hermes_bench.sif"
 do_prepare=false
+task_filter=""
 port=11000
 
 while [ $# -gt 0 ]; do
@@ -61,6 +65,7 @@ while [ $# -gt 0 ]; do
     --hermes-agent) hermes_agent_path="$2"; shift 2 ;;
     --image) image="$2"; shift 2 ;;
     --prepare) do_prepare=true; shift ;;
+    --tasks) task_filter="$2"; shift 2 ;;
     --port) port="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -109,14 +114,43 @@ fi
 rm -f results/preprocessed_datasets/benchmark_metrics*.json "$adapter"/data/hermes_bench_metrics*.json
 apptainer instance list 2>/dev/null | awk '/nemo-gym/ {print $1}' | xargs -r -I{} apptainer instance stop {} 2>/dev/null || true
 
+# Task-family filter: build a filtered JSONL + a config copy pointing at it
+# (the --input CLI flag is silently ignored; jsonl_fpath in the config wins).
+agent_config="$adapter/configs/hermes_bench_hermes.yaml"
+if [ -n "$task_filter" ]; then
+  filtered="$adapter/data/hermes_bench_filtered_$$.jsonl"
+  TASK_FILTER="$task_filter" FILTERED_OUT="$filtered" python3 - <<'PY'
+import json, os, re, sys
+pat = re.compile(os.environ["TASK_FILTER"])
+src = "responses_api_agents/hermes_bench/data/hermes_bench.jsonl"
+n = 0
+with open(src) as f, open(os.environ["FILTERED_OUT"], "w") as g:
+    for line in f:
+        d = json.loads(line)
+        task = json.loads(d["responses_create_params"]["metadata"]["task"])
+        hay = f'{task.get("task_id","")} {task.get("category","")}'
+        if pat.search(hay):
+            g.write(line if line.endswith("\n") else line + "\n")
+            n += 1
+if n == 0:
+    sys.exit(f"--tasks '{pat.pattern}' matched 0 of 140 tasks")
+print(f"==> --tasks '{pat.pattern}' matched {n} task(s)")
+PY
+  agent_config="results/hermes_bench_hermes_filtered_$$.yaml"
+  mkdir -p results
+  sed "s|jsonl_fpath:.*hermes_bench.jsonl|jsonl_fpath: $filtered|" \
+    "$adapter/configs/hermes_bench_hermes.yaml" > "$agent_config"
+  trap 'rm -f "$filtered" "$agent_config"' EXIT
+fi
+
 # 5. Run
 export HERMES_BENCH_IMAGE="$image"
 export RAY_TMPDIR="/tmp/ray_hb_$$"
 mkdir -p "$RAY_TMPDIR" results
 
-echo "==> Running 140 tasks with $model (output: results/${output}.jsonl)"
+echo "==> Running with $model (output: results/${output}.jsonl)"
 .venv/bin/gym eval run \
-  --config "$adapter/configs/hermes_bench_hermes.yaml" \
+  --config "$agent_config" \
   --config "$adapter/configs/sandbox_apptainer.yaml" \
   --model-type openai_model \
   --agent hermes_bench_hermes \
