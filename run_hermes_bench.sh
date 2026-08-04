@@ -112,7 +112,11 @@ fi
 
 # 3+4. Preflight
 rm -f results/preprocessed_datasets/benchmark_metrics*.json "$adapter"/data/hermes_bench_metrics*.json
-apptainer instance list 2>/dev/null | awk '/nemo-gym/ {print $1}' | xargs -r -I{} apptainer instance stop {} 2>/dev/null || true
+# Only reap orphaned sandboxes when no other eval is running — in parallel
+# multi-model mode this cleanup would kill sibling runs' live sandboxes.
+if [ "$(pgrep -fc 'gym eval run' || true)" -le 1 ]; then
+  apptainer instance list 2>/dev/null | awk '/nemo-gym/ {print $1}' | xargs -r -I{} apptainer instance stop {} 2>/dev/null || true
+fi
 
 # Task-family filter: build a filtered JSONL + a config copy pointing at it
 # (the --input CLI flag is silently ignored; jsonl_fpath in the config wins).
