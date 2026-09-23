@@ -364,6 +364,13 @@ class NeMoGymResponseUsage(ResponseUsage):
 class NeMoGymResponse(Response):
     output: List[NeMoGymResponseOutputItem]
     usage: Optional[NeMoGymResponseUsage] = None
+    # Some Responses-API backends (e.g. Nous Portal) do not echo the request's
+    # `tools` / `tool_choice` / `parallel_tool_calls` back in the response
+    # object, while openai.types.responses.Response requires them. They are
+    # passthrough echo fields nothing downstream consumes, so default them.
+    tools: Optional[List[Any]] = None
+    tool_choice: Optional[Any] = None
+    parallel_tool_calls: Optional[bool] = None
 
 
 ########################################
