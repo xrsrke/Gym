@@ -114,8 +114,21 @@ fi
 rm -f results/preprocessed_datasets/benchmark_metrics*.json "$adapter"/data/hermes_bench_metrics*.json
 # Only reap orphaned sandboxes when no other eval is running — in parallel
 # multi-model mode this cleanup would kill sibling runs' live sandboxes.
-if [ "$(pgrep -fc 'gym eval run' || true)" -le 1 ]; then
+#
+# Counting 'gym eval run' alone is racy: a sibling launched seconds earlier has
+# not spawned that process yet, so the count reads 1 and we reap its sandboxes
+# out from under it. Observed 2026-08-12 — four tasks in a co-running eval died
+# with "no instance found with name nemo-gym-..." and scored 0.0, which looked
+# exactly like model failure. Also honour an explicit opt-out so a caller who
+# knows siblings are coming can disable reaping outright.
+reap_guard_count="$(pgrep -fc 'gym eval run' || true)"
+runner_siblings="$(pgrep -fc 'run_hermes_bench.sh' || true)"
+if [ "${HERMES_BENCH_NO_REAP:-0}" = "1" ]; then
+  echo "==> sandbox reaping disabled (HERMES_BENCH_NO_REAP=1)"
+elif [ "$reap_guard_count" -le 1 ] && [ "${runner_siblings:-1}" -le 1 ]; then
   apptainer instance list 2>/dev/null | awk '/nemo-gym/ {print $1}' | xargs -r -I{} apptainer instance stop {} 2>/dev/null || true
+else
+  echo "==> skipping orphan-sandbox reap: $runner_siblings runner(s), $reap_guard_count eval(s) live"
 fi
 
 # Task-family filter: build a filtered JSONL + a config copy pointing at it

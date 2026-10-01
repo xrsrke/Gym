@@ -299,8 +299,17 @@ def _grade_skills(
     elif task["grading_type"] == "automated" or judge_missing:
         aggregate = aggregate_score(scores, task.get("grading_weights"))
     else:
+        # Keep `_defect_groups` alongside the numeric axes: it is a dict, so a
+        # plain isinstance((int, float)) filter silently discarded it and
+        # automated scoring fell back to the flat per-axis mean. Observed
+        # 2026-08-14 — the collapsed scorer was live in lib_grading but never
+        # received its grouping metadata, so the suite scored 0.789 where the
+        # replay predicted 0.73.
         combined = {
-            "automated": {key: value for key, value in scores.items() if isinstance(value, (int, float))},
+            "automated": {
+                key: value for key, value in scores.items()
+                if isinstance(value, (int, float)) or key == "_defect_groups"
+            },
             "llm_judge": {key: value for key, value in judge_scores.items() if isinstance(value, (int, float))},
         }
         aggregate = calculate_overall_score(
